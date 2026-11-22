@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Source files to copy into the current directory.
+# Absolute paths of files to back up.
 FILES=(
   "/Users/tommy/.zshrc"
   # "/Users/tommy/.gitconfig"
@@ -9,6 +9,9 @@ FILES=(
 
 REMOTE="origin"
 COMMIT_MSG="Backup $(date '+%Y-%m-%d %H:%M:%S %Z')"
+
+# Back up underneath the directory where this script is invoked.
+BACKUP_DIR="$(pwd -P)"
 
 # Ensure we are inside a Git working tree.
 if ! git rev-parse --show-toplevel >/dev/null 2>&1; then
@@ -28,31 +31,52 @@ if ! git remote get-url "$REMOTE" >/dev/null 2>&1; then
   exit 1
 fi
 
-# Validate every source before copying any files.
+# Validate all source paths before copying anything.
 for src in "${FILES[@]}"; do
+  case "$src" in
+    /*) ;;
+    *)
+      echo "Error: Source must be an absolute path: '$src'" >&2
+      exit 1
+      ;;
+  esac
+
+  # Reject path traversal so destinations stay under BACKUP_DIR.
+  case "$src/" in
+    */../*|*/./*)
+      echo "Error: Source path must not contain '.' or '..': '$src'" >&2
+      exit 1
+      ;;
+  esac
+
   if [[ ! -f "$src" ]]; then
     echo "Error: Source file not found: '$src'" >&2
     exit 1
   fi
 done
 
-# Copy files into the directory where the script was invoked.
+# Preserve each source path underneath the current directory.
 for src in "${FILES[@]}"; do
-  cp -- "$src" .
-  printf 'Copied: %s -> ./%s\n' "$src" "$(basename "$src")"
+  relative_path="${src#/}"
+  dest="$BACKUP_DIR/$relative_path"
+
+  mkdir -p "$(dirname "$dest")"
+  cp "$src" "$dest"
+
+  printf 'Copied: %s -> %s\n' "$src" "$dest"
 done
 
 # Stage all repository changes, including additions and deletions.
 git add -A
 
-# Only create a commit when staged changes exist.
+# Commit only when staged changes exist.
 if git diff --cached --quiet; then
   echo "No changes to commit."
 else
   git commit -m "$COMMIT_MSG"
 fi
 
-# Push even if no new commit was needed, in case local commits are unpushed.
+# Also push any previously unpushed commits.
 git push "$REMOTE" "HEAD:refs/heads/$BRANCH"
 
 echo "Backup pushed to $REMOTE/$BRANCH."
