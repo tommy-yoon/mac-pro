@@ -1,0 +1,44 @@
+#!/bin/bash
+set -euo pipefail
+umask 077
+
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+unset TAR_OPTIONS
+
+backup_root="/Users/tommy/Library/Application Support/llm-wiki/backups"
+vault="/Users/tommy/My Drive/obsidian/tommy-obsedian-default"
+
+backup_dir=$(/usr/bin/mktemp -d \
+  "$backup_root/run-$(/bin/date +%Y%m%d-%H%M%S)-XXXXXX")
+
+echo "Creating pre-run workspace backup..."
+
+sudo -n -u codex -H \
+  /usr/bin/env -i PATH="$PATH" COPYFILE_DISABLE=1 \
+  /usr/bin/tar \
+    --no-acls --no-xattrs --no-fflags \
+    --exclude='.DS_Store' \
+    --exclude='.backups' \
+    -cf - -C /Users/codex/llm-wiki . |
+  /usr/bin/gzip -c > "$backup_dir/workspace.tar.gz"
+
+echo "Creating pre-run vault wiki backup..."
+
+COPYFILE_DISABLE=1 /usr/bin/tar \
+  --no-acls --no-xattrs --no-fflags \
+  -cf - -C "$vault" \
+  AGENTS.md AI-knowledge-base |
+  /usr/bin/gzip -c > "$backup_dir/vault-wiki.tar.gz"
+
+for name in workspace vault-wiki; do
+  archive="$backup_dir/$name.tar.gz"
+  [[ -s "$archive" ]]
+  /usr/bin/gzip -t "$archive"
+  /usr/bin/tar -tzf "$archive" > "$backup_dir/$name-contents.txt"
+  [[ -s "$backup_dir/$name-contents.txt" ]]
+done
+
+/usr/bin/touch "$backup_dir/VERIFIED"
+
+echo "Both backup archives passed integrity and listing checks."
+echo "Backup directory: $backup_dir"

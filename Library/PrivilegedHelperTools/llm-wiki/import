@@ -1,0 +1,98 @@
+#!/bin/bash
+set -euo pipefail
+
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+unset TAR_OPTIONS
+umask 077
+
+if [[ "$EUID" -ne 0 || "$#" -ne 0 ]]; then
+  echo "Run this helper through sudo, without arguments." >&2
+  exit 1
+fi
+
+vault="/Users/tommy/My Drive/obsidian/tommy-obsedian-default"
+
+echo "Staging instructions, sources and current wiki..."
+
+ /usr/bin/sudo -n -H -u tommy \
+  /usr/bin/env -i PATH="$PATH" COPYFILE_DISABLE=1 \
+  /usr/bin/tar \
+    --no-acls --no-xattrs --no-fflags \
+    --exclude='.DS_Store' \
+    --exclude='.backups' \
+    -cf - -C "$vault" \
+    AGENTS.md Library Journal \
+    AI-knowledge-base/SCHEMA.md \
+    AI-knowledge-base/wiki \
+    AI-knowledge-base/output \
+    AI-knowledge-base/index.md \
+    AI-knowledge-base/log.md \
+    AI-knowledge-base/.agent/journal-scan-state.json |
+ /usr/bin/sudo -n -H -u codex \
+  /usr/bin/env -i PATH="$PATH" COPYFILE_DISABLE=1 \
+  /bin/bash -c '
+    set -euo pipefail
+    umask 077
+
+    workspace="/Users/codex/llm-wiki"
+    stage=$(/usr/bin/mktemp -d /private/tmp/llm-wiki-import.XXXXXXXX)
+    trap '\''/bin/rm -rf -- "$stage"'\'' EXIT
+
+    /usr/bin/tar \
+      --no-same-owner --no-same-permissions \
+      --no-acls --no-xattrs --no-fflags \
+      -xf - -C "$stage"
+
+    # Reject symbolic links at the destination boundary.
+    for path in "$workspace" "$workspace/AI-knowledge-base"; do
+      [[ -d "$path" && ! -L "$path" ]] || {
+        echo "Unsafe or missing workspace directory: $path" >&2
+        exit 1
+      }
+    done
+
+    # Validate both mirror trees before changing either one.
+    for folder in wiki output; do
+      src="$stage/AI-knowledge-base/$folder"
+      dst="$workspace/AI-knowledge-base/$folder"
+
+      [[ -d "$src" && ! -L "$src" ]]
+      [[ -d "$dst" && ! -L "$dst" ]]
+
+      if [[ -n "$(/usr/bin/find "$src" "$dst" -type l -print)" ]]; then
+        echo "Symbolic links found in $folder; stopping." >&2
+        exit 1
+      fi
+    done
+
+    # Preserve the existing non-mirroring source import behaviour.
+    /usr/bin/tar -cf - -C "$stage" \
+      AGENTS.md Library Journal AI-knowledge-base/SCHEMA.md |
+      /usr/bin/tar \
+        --no-same-owner --no-same-permissions \
+        --no-acls --no-xattrs --no-fflags \
+        -xf - -C "$workspace"
+
+    # Copy supporting files without mirroring the parent directories.
+    [[ ! -L "$workspace/AI-knowledge-base/.agent" ]]
+    /bin/mkdir -p "$workspace/AI-knowledge-base/.agent"
+
+    for file in index.md log.md .agent/journal-scan-state.json; do
+      src="$stage/AI-knowledge-base/$file"
+      dst="$workspace/AI-knowledge-base/$file"
+      [[ -f "$src" && ! -L "$src" ]]
+      [[ ! -L "$dst" ]]
+      /usr/bin/rsync -rc "$src" "$dst"
+    done
+
+    # Mirror only the two explicitly permitted generated directories.
+    for folder in wiki output; do
+      /usr/bin/rsync -rci --delete-after \
+        --exclude=".DS_Store" \
+        --exclude=".backups" \
+        "$stage/AI-knowledge-base/$folder/" \
+        "$workspace/AI-knowledge-base/$folder/"
+    done
+  '
+
+echo "Wiki import completed."

@@ -1,0 +1,37 @@
+#!/bin/bash
+set -euo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+lock="/Users/tommy/Library/Logs/llm-wiki/auto.lock"
+
+if ! /bin/mkdir "$lock"; then
+  echo "Another automatic run may be active; skipping."
+  exit 0
+fi
+
+trap '/bin/rmdir "$lock"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+echo "=== Wiki update started: $(/bin/date) ==="
+
+/Users/tommy/.local/bin/wiki-backup
+
+/usr/bin/sudo -n \
+  /Library/PrivilegedHelperTools/llm-wiki/import
+
+/usr/bin/sudo -n -u codex -H /opt/homebrew/bin/codex \
+  --profile ollama-launch \
+  --ask-for-approval never \
+  exec \
+  --sandbox workspace-write \
+  --cd "/Users/codex/llm-wiki" \
+  --skip-git-repo-check \
+  --color never \
+  "update" </dev/null
+
+/usr/bin/sudo -n \
+  /Library/PrivilegedHelperTools/llm-wiki/publish
+
+echo "=== Wiki update completed: $(/bin/date) ==="

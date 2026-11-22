@@ -1,0 +1,93 @@
+#!/bin/bash
+set -euo pipefail
+
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+unset TAR_OPTIONS
+umask 077
+
+if [[ "$EUID" -ne 0 || "$#" -ne 0 ]]; then
+  echo "Run this helper through sudo, without arguments." >&2
+  exit 1
+fi
+
+echo "Staging permitted wiki outputs..."
+
+ /usr/bin/sudo -n -H -u codex \
+  /usr/bin/env -i PATH="$PATH" COPYFILE_DISABLE=1 \
+  /usr/bin/tar \
+    --no-acls --no-xattrs --no-fflags \
+    --exclude='.DS_Store' \
+    --exclude='.backups' \
+    -cf - -C /Users/codex/llm-wiki \
+    AI-knowledge-base/wiki \
+    AI-knowledge-base/output \
+    AI-knowledge-base/index.md \
+    AI-knowledge-base/log.md \
+    AI-knowledge-base/.agent/journal-scan-state.json |
+ /usr/bin/sudo -n -H -u tommy \
+  /usr/bin/env -i PATH="$PATH" COPYFILE_DISABLE=1 \
+  /bin/bash -c '
+    set -euo pipefail
+    umask 077
+
+    vault="/Users/tommy/My Drive/obsidian/tommy-obsedian-default"
+    stage=$(/usr/bin/mktemp -d /private/tmp/llm-wiki-publish.XXXXXXXX)
+    trap '\''/bin/rm -rf -- "$stage"'\'' EXIT
+
+    /usr/bin/tar \
+      --no-same-owner --no-same-permissions \
+      --no-acls --no-xattrs --no-fflags \
+      -xf - -C "$stage"
+
+    # Validate destination boundaries before publishing.
+    for path in "$vault" "$vault/AI-knowledge-base"; do
+      [[ -d "$path" && ! -L "$path" ]] || {
+        echo "Unsafe or missing vault directory: $path" >&2
+        exit 1
+      }
+    done
+
+    # Validate both mirror trees before changing either one.
+    for folder in wiki output; do
+      src="$stage/AI-knowledge-base/$folder"
+      dst="$vault/AI-knowledge-base/$folder"
+
+      [[ -d "$src" && ! -L "$src" ]]
+      [[ -d "$dst" && ! -L "$dst" ]]
+
+      if [[ -n "$(/usr/bin/find "$src" "$dst" -type l -print)" ]]; then
+        echo "Symbolic links found in $folder; stopping." >&2
+        exit 1
+      fi
+    done
+
+    [[ ! -L "$vault/AI-knowledge-base/.agent" ]]
+
+    # Validate all supporting files before writing.
+    for file in index.md log.md .agent/journal-scan-state.json; do
+      src="$stage/AI-knowledge-base/$file"
+      dst="$vault/AI-knowledge-base/$file"
+      [[ -f "$src" && ! -L "$src" ]]
+      [[ ! -L "$dst" ]]
+      [[ ! -e "$dst" || -f "$dst" ]]
+    done
+
+    /bin/mkdir -p "$vault/AI-knowledge-base/.agent"
+
+    for file in index.md log.md .agent/journal-scan-state.json; do
+      /usr/bin/rsync -rc \
+        "$stage/AI-knowledge-base/$file" \
+        "$vault/AI-knowledge-base/$file"
+    done
+
+    # Mirror only the explicitly permitted generated directories.
+    for folder in wiki output; do
+      /usr/bin/rsync -rci --delete-after \
+        --exclude=".DS_Store" \
+        --exclude=".backups" \
+        "$stage/AI-knowledge-base/$folder/" \
+        "$vault/AI-knowledge-base/$folder/"
+    done
+  '
+
+echo "Wiki publish transfer completed."
